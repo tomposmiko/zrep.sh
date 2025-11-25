@@ -98,15 +98,54 @@ f_process_source_line() {
     VIRT_TYPE="$3"
 }
 
-f_pull_snapshots() {
-    if [[ "$VIRT_TYPE" =~ lxd-* ]];
-        then
-            ssh "syncoid-backup@${SOURCE_HOST}" lxc snapshot "$VM_NAME" zas-"${FREQ}-${DATE}" || true
-        else
-            ssh "syncoid-backup@${SOURCE_HOST}" sudo zfs snapshot -r "${REMOTE_ZFS_PATH}/${VM_NAME}@zas-${FREQ}-${DATE}" || true
+f_create_snapshot() {
+    case "$VIRT_TYPE" in
+    lxd-*)
+            ssh -o BatchMode=yes "syncoid-backup@${SOURCE_HOST}" lxc snapshot "$VM_NAME" zas-"${FREQ}-${DATE}" || true
+    ;;
+
+        incus-*)
+            ssh -o BatchMode=yes "syncoid-backup@${SOURCE_HOST}" incus snapshot create "$VM_NAME" zas-"${FREQ}-${DATE}" < /dev/null || true
+    ;;
+
+    *)
+        fc_say_fail "Unknown virtualization type: '$VIRT_TYPE'"
+
+        exit 1
+    ;;
+    esac
+}
+
+f_pull_snapshot_ct() {
+    syncoid -r "${SSH_OPTS[@]}" "${ARGS_SYNCOID[@]}" "syncoid-backup@${SOURCE_HOST}:${REMOTE_ZFS_PATH}/${VM_NAME}" "${DATASET_ZREP}/${VM_NAME}"
+}
+
+f_pull_snapshot_incus_kvm() {
+    if ( ! zfs list -Hpo written "${DATASET_ZREP}/${VM_NAME}" &> /dev/null ); then
+        zfs create "${DATASET_ZREP}/${VM_NAME}"
     fi
 
-    syncoid -r "${SSH_OPTS[@]}" "${ARGS_SYNCOID[@]}" "syncoid-backup@${SOURCE_HOST}:${REMOTE_ZFS_PATH}/${VM_NAME}" "${DATASET_ZREP}/${VM_NAME}"
+    syncoid -r "${SSH_OPTS[@]}" "${ARGS_SYNCOID[@]}" "syncoid-backup@${SOURCE_HOST}:${REMOTE_ZFS_PATH}/${VM_NAME}" "${DATASET_ZREP}/${VM_NAME}/${VM_NAME}"
+
+    syncoid -r "${SSH_OPTS[@]}" "${ARGS_SYNCOID[@]}" "syncoid-backup@${SOURCE_HOST}:${REMOTE_ZFS_PATH}/${VM_NAME}.block" "${DATASET_ZREP}/${VM_NAME}/${VM_NAME}.block"
+}
+
+f_pull_snapshots() {
+    case "$VIRT_TYPE" in
+        lxd-*|incus-ct)
+            f_pull_snapshot_ct
+    ;;
+
+        incus-kvm)
+            f_pull_snapshot_incus_kvm
+    ;;
+
+    *)
+        echo "Unknown virtualization type: '$VIRT_TYPE'"
+
+        exit 1
+    ;;
+    esac
 }
 
 f_set_hostname_in_path() {
@@ -136,10 +175,6 @@ f_set_remote_zfs_path() {
             REMOTE_ZFS_PATH="lxd/containers"
         ;;
 
-        libvirt)
-            REMOTE_ZFS_PATH="kvm"
-        ;;
-
         lxd-kvm)
             REMOTE_ZFS_PATH="lxd/virtual-machines"
         ;;
@@ -158,7 +193,7 @@ f_usage() {
   echo "    $0 -s <source> [-c <config file>] [--bwlimit <limit>] [--quiet|--debug] [--force]"
   echo
   echo "        -c                <config file>"
-  echo "        -s|--source       <source host>:<VM>:<lxc|lxd-ct|lxd-kvm|libvirt>"
+  echo "        -s|--source       <source host>:<VM>:<lxc|incus-ct|incus-kvm|lxd-ct|lxd-kvm>"
   echo "        -f|--freq         hourly|daily|weekly|monthly"
   echo "        -b|--bwlimit      <limit k|m|g|t>"
   echo "        -q|--quiet"
@@ -207,7 +242,7 @@ f_validate_number_of_sources() {
 
 f_validate_source_format() {
     # Is the source parameter a short or a full one?
-    if ( echo "$PARAM_SOURCE" | grep -qE "^[A-Za-z0-9\.-]+:[A-Za-z0-9\.-]+:(lxc|lxd-ct|lxd-kvm|libvirt)$" );
+    if ( echo "$PARAM_SOURCE" | grep -qE "^[A-Za-z0-9\.-]+:[A-Za-z0-9\.-]+:(incus-ct|incus-kvm|lxc|lxd-ct|lxd-kvm)$" );
         then
             f_validate_number_of_sources "$PARAM_SOURCE"
 
@@ -237,4 +272,5 @@ f_process_source_line
 f_set_hostname_in_path
 f_set_remote_zfs_path
 f_list_snapshots
+f_create_snapshot
 f_pull_snapshots
