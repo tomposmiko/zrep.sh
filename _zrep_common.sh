@@ -4,7 +4,9 @@ set -euo pipefail
 COMMON_PATH=$(readlink -f -- "${BASH_SOURCE[0]}")
 . "$(dirname -- "$COMMON_PATH")/_common.sh"
 
-ARGS_SYNCOID=()
+# Incus/LXD clones often originate in images/, outside the source gateway's
+# container/VM scope. Back up each instance independently of image origins.
+ARGS_SYNCOID=(--no-clone-handling)
 DATASET_ZREP="tank/zrep"
 DIR_CONFIG="/etc/zrep"
 FILE_CONFIG="$DIR_CONFIG/zrep.conf"

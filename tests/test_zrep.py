@@ -65,6 +65,7 @@ if name == 'zfs':
                 transfers = [c for c in self.calls() if c[0] == 'syncoid'][-2:]
                 self.assertEqual(transfers[0][-2:], [f'syncoid-backup@host:tank/{platform}/virtual-machines/vm', 'tank/zrep/vm/vm'])
                 self.assertEqual(transfers[1][-1], 'tank/zrep/vm/vm.block')
+                self.assertTrue(all('--no-clone-handling' in call for call in transfers))
 
     def test_symlink_chain_from_another_working_directory(self):
         links = self.root / 'installed'
@@ -314,6 +315,13 @@ if name == 'zfs':
         result = self.run_script('zsr.sh', ['--dataset', 'tank/zrep', '--delete', '--confirm', 'tank/zrep', '--before', '2024-10-01', '--keep-at-least', '1', 'old'], SNAPSHOTS='tank/zrep/vm@old.one\t1000\ntank/zrep/vm@old.two\t2000\n')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([c for c in self.calls() if 'destroy' in c], [['zfs', 'destroy', 'tank/zrep/vm@old.one']])
+
+    def test_container_disables_traversal_to_image_origins(self):
+        self.config.write_text('host:vm:incus-ct\n')
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        transfer = next(c for c in self.calls() if c[0] == 'syncoid')
+        self.assertIn('--no-clone-handling', transfer)
 
     def test_snapshot_failure_stops_transfer(self):
         self.assertNotEqual(self.run_script(FAIL_COMMAND='ssh').returncode, 0)

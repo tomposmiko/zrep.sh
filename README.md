@@ -58,24 +58,46 @@ legacy checker only sees existing datasets and cannot detect that case.
 
 The sibling Puppet repository owns:
 
-- `pts_only_shell`: the source-side `only-shell` executable and `.onlyrules`.
-  Keep `client/onlyrules.zrep` synchronized with its managed rule file. These
-  rules allow Incus snapshot creation and ZFS access to container and VM paths
-  beneath `tank/incus` and `tank/lxd`, including `.block` datasets.
-- `pts_users::users::u_syncoid_backup`: account/key and sudo privileges. The
-  sudo entry must name `syncoid-backup`, the account zrep actually uses.
+- `pts_only_shell::zrep`: the root-owned restricted login shell, forced SSH
+  command and privileged validating gateway. It is installed whenever the
+  backup account is managed; the legacy `only-shell` rules are not used.
+- `pts_users::users::u_syncoid_backup`: the restricted key, account and sudo
+  policy. Supplementary groups are cleared inclusively, including `sudo`,
+  `ptsaccess` and any Incus/LXD administration groups. The only sudo command
+  is `/usr/local/sbin/pts-zrep-source`, which validates every request.
 - `pts_metrics::backups`: reads the same three-field config and default
   destination layout. VM freshness requires matching daily snapshots in both
   configuration and `.block` datasets. Extended vaults are not supported by the
   metrics collector and fail collection explicitly.
 
-Puppet currently installs a key without a forced-command restriction and puts
-this account in `sudo`. Installing `.onlyrules` alone does not restrict SSH.
-`client/authorized_keys` illustrates a forced-command configuration; enabling
-it requires validating actual syncoid commands on the deployed version first.
-This review does not automatically restrict the deployed key or group access.
-The standalone `syncoid-shell` is an older alternative and is not what Puppet
-installs; its rules do not cover the current replication command set.
+SSH accepts only public-key authentication from `/etc/ssh/auths/%u.pub` for
+this account. A per-user ForceCommand also protects against alternate keys;
+forwarding, PTY allocation, user SSH rc hooks and a general login shell are
+disabled. The gateway runs no shell text and ignores account client configs.
+It accepts zrep's default-project local instance snapshots, scoped ZFS reads
+and sends, and creation/deletion of individual `syncoid_*` helper snapshots.
+It denies dataset deletion, receive, rollback, property changes, clone/image
+traversal, shell expansion, arbitrary pipelines and file redirection. Resumed
+sends are decoded with a dry run and their target GUID must match an existing
+snapshot under an allowed source path before sending any stream.
+
+zrep passes `--no-clone-handling` to syncoid for containers and both VM
+components. Incus/LXD clones may originate in images/; backing up instances
+independently avoids granting access outside the scoped source trees. This
+can use more backup space than preserving clone relationships. Transport and
+resumable replication remain enabled. The gateway supports default lzop and
+16M mbuffer pipelines (and their absence); other compression, buffer sizes,
+bookmarks/holds and extra syncoid switches require an explicit policy review.
+
+Apply the matching Puppet and zrep changes together: install the new zrep
+client default before enforcing the source restrictions. Existing SSH sessions
+must be closed after the privilege change; changing groups/ForceCommand does
+not revoke the privileges of already-running sessions. Validate a new SSH
+connection, full and incremental container/VM backup, an interrupted/resumed
+transfer and a restore on a staging host before production rollout.
+The repository tests generate traffic with upstream syncoid and mocked tools;
+they do not establish compatibility with an unknown deployed version or test
+real ZFS streams, sshd/PAM configuration, or restores.
 
 `zsr.sh` selects backup snapshots by literal substring of the snapshot name.
 It previews by default, validates arguments before querying ZFS, and limits
