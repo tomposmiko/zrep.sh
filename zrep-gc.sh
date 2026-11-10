@@ -45,21 +45,26 @@ f_process_args() {
 
     shift $((OPTIND - 1))
 
-    [ $# -ne 2 ] && f_usage
+    [[ $# -eq 2 ]] || f_usage
 
     DATASET_PATH="$1"
     KEEP_VALUE="$2"
 }
 
 f_get_dataset_list() {
-    if [[ "$DATASET_PATH" == tank/zrep/* ]] || [[ "$DATASET_PATH" == tank/zrb/* ]]; then
-        mapfile -t DATASET_LIST < <(
-            zfs list -H -o name -r "$DATASET_PATH" | grep "^${DATASET_PATH}"
-        )
+    local inventory dataset
+    # Capture command status before parsing: process substitution hides failures.
+    if [[ "$DATASET_PATH" == */* ]]; then
+        inventory=$(zfs list -H -o name -r "$DATASET_PATH")
+        mapfile -t DATASET_LIST <<< "$inventory"
     else
-         mapfile -t DATASET_LIST < <(
-             zfs list -H -o name -r tank | grep "/${DATASET_PATH}"
-        )
+        inventory=$(zfs list -H -o name -r tank)
+        DATASET_LIST=()
+        while IFS= read -r dataset; do
+            if [[ "/$dataset/" == *"/$DATASET_PATH/"* ]]; then
+                DATASET_LIST+=("$dataset")
+            fi
+        done <<< "$inventory"
     fi
 
     if [ "${#DATASET_LIST[@]}" -eq 0 ]; then
@@ -72,25 +77,29 @@ f_get_dataset_list() {
 f_get_snapshot_list_filtered() {
     local dataset_path=$1
 
-    local grep_expr="^${dataset_path}@"
-
-    if [ -n "$SNAP_FILTER" ]; then
-        grep_expr="^${dataset_path}@.*${SNAP_FILTER}"
-    fi
-
-    zfs list -H -t snapshot -o name,creation -s creation -r "$dataset_path" | grep -E "$grep_expr" || true
+    local inventory snap_path snap_epoch
+    inventory=$(zfs list -H -p -t snapshot -o name,creation -s creation -r "$dataset_path") || return $?
+    while IFS=$'\t' read -r snap_path snap_epoch; do
+        [[ "$snap_path" == "$dataset_path@"* ]] || continue
+        [[ "${snap_path#*@}" == *"$SNAP_FILTER"* ]] || continue
+        printf '%s\t%s\n' "$snap_path" "$snap_epoch"
+    done <<< "$inventory"
 }
 
 f_get_snapshot_delete_list_based_on_count() {
     local dataset_path=$1
 
-    local snap_count_to_keep="$KEEP_VALUE"
+    local snap_count_to_keep=$((10#$KEEP_VALUE))
 
     local snap_path_list
 
-    mapfile -t snap_path_list < <(
-        f_get_snapshot_list_filtered "$dataset_path" | awk '{print $1}'
-    )
+    local inventory
+    inventory=$(f_get_snapshot_list_filtered "$dataset_path")
+    snap_path_list=()
+    local snap_path snap_epoch
+    while IFS=$'\t' read -r snap_path snap_epoch; do
+        [[ -z "$snap_path" ]] || snap_path_list+=("$snap_path")
+    done <<< "$inventory"
 
     local snap_count_total=${#snap_path_list[@]}
 
@@ -114,17 +123,19 @@ f_get_snapshot_delete_list_based_on_date() {
 
     SNAPSHOT_DELETE_LIST=()
 
-    local snap_date
+    local inventory
+    inventory=$(f_get_snapshot_list_filtered "$dataset_path")
     local snap_epoch
     local snap_path
 
-    while IFS=$'\t' read -r snap_path snap_date; do
-        snap_epoch=$( date -d "$snap_date" +%s )
+    while IFS=$'\t' read -r snap_path snap_epoch; do
+        [[ -n "$snap_path" ]] || continue
+        [[ "$snap_epoch" =~ ^[0-9]+$ ]] || { echo "Invalid snapshot creation time" >&2; exit 1; }
 
         if [ "$snap_epoch" -lt "$cutoff_epoch" ]; then
             SNAPSHOT_DELETE_LIST+=( "$snap_path" )
         fi
-    done < <( f_get_snapshot_list_filtered "$dataset_path" )
+    done <<< "$inventory"
 }
 
 f_get_snapshot_delete_list_final() {
@@ -195,6 +206,12 @@ f_process_dataset() {
 
 
 f_process_args "$@"
+
+if [[ "$KEEP_VALUE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+    date -d "$KEEP_VALUE" +%s >/dev/null
+elif [[ ! "$KEEP_VALUE" =~ ^[0-9]{1,9}$ ]]; then
+    f_usage
+fi
 
 f_get_dataset_list
 

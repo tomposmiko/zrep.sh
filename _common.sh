@@ -86,7 +86,7 @@ fc_temp_file_create() {
 fc_temp_file_remove() {
     fc_check_arg "$1" "temp file name"
 
-    rm -f "$SNAP_LIST_ALL"
+    rm -f -- "$1"
 }
 
 fc_uncolorize() {

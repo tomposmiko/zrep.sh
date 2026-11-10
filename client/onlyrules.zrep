@@ -1,67 +1,28 @@
-# leg20170304: CC0, Public Domain
-#
-# This is a command filter configuration file for the 'only' utility.
-# In fact it is a sed(1) script which is fed one line of input
-# composed of the allowed command (in the authorized_keys file) and
-# all command line arguments separated by single spaces.
-#
-# The template for a matching filter is:
-#
-#     \:^command argument_filter:{p;q}
-#
-# Where _command_ is the allowed command string and _argument_filter_
-# is a regular expression to match allowed commandlines.
-# The {p;q} at the end of the line prints the matched line on stdout
-# and quits the matching process.  So the first matching line wins.
-# Order your filters from specific to general.
-#
-# To blacklist a certain combination of commandline arguments use:
-#
-#     \:^command blocking_filter:q'
-#
-# This quits immediately at the matching line without printing
-# anything, thus disabling the respective match.
-#
-# We use \: ... : instead of / ... / to delimit regular expressions,
-# because filters typically involve paths with forward slashes.  Also
-# the s/regexp/subst/ command is expressed as s:regexp:subst: for the
-# same reason.
-#
-# The following examples illustrate several techniques for writing
-# rules.
-#
-# Examples for substituting arguments or whole commands
-# ps -> ps -ef
-\:^ps$:{
-    c\
-ps -ef
-    q
-}
-# vmstat -> vmstat 1 100
-\:^vmstat$:{
-    c\
-vmstat 1 100
-    q
-}
-# cups stop|start -> /etc/init.d/cupsys stop|start
-\:^cups \(stop\|start\)$:{
-    s:^cups \(.*\):/etc/init.d/cupsys \1:p
-    q
-}	
-# Allow `ls /tmp` or `ls '/tmp'`
+# Scoped replication commands for zrep; keep client/onlyrules.zrep in sync.
 \:^exit$:{p;q}
 \:^command -v mbuffer$:{p;q}
 \:^command -v lzop$:{p;q}
 \:^echo -n$:{p;q}
-\:^lxc snapshot \([A-Za-z0-9-]*\) zas-\([0-9-]*\)$:{p;q}
-\:^sudo zfs destroy 'tank/lxd/containers/\([A-Za-z0-9-]*\)'@syncoid_\([A-Za-z0-9-]*\)_\([0-9:-]*\)$:{p;q}
-\:^sudo zfs get -H syncoid\:sync 'tank/lxd/containers/\([A-Za-z0-9-]*\)'$:{p;q}
-\:^sudo zfs get -Hpd 1 -t snapshot guid,creation '\(tank/lxd/containers/[A-Za-z0-9-]*\)'$:{p;q}
-\:^sudo zfs list -o name,origin -t filesystem,volume -Hr 'tank/lxd/containers/\([A-Za-z0-9-]*\)'$:{p;q}
-#\:^sudo zfs send -I 'tank/lxd/containers/\([A-Za-z0-9-]*\)'.*$:{p;q}
-\:^sudo zfs send -I 'tank/lxd/containers/\([A-Za-z0-9-]*\)'@'syncoid_\([A-Za-z0-9-]*\)_\([0-9:-]*\)' 'tank/lxd/containers/\([A-Za-z0-9-]*\)'@'syncoid_\([A-Za-z0-9-]*\)_\([0-9:-]*\)' | lzop | mbuffer -q -s 128k -m 16M 2>/dev/null$:{p;q}
-\:^sudo zfs send -nP -I 'tank/lxd/containers/\([A-Za-z0-9-]*\)@syncoid_\([A-Za-z0-9-]*\)_\([0-9:-]*\)' 'tank/lxd/containers/\([A-Za-z0-9-]*\)@syncoid_\([A-Za-z0-9-]*\)_\([0-9:-]*\)'$:{p;q}
-\:^sudo zfs snapshot 'tank/lxd/containers/\([A-Za-z0-9-]*\)'@syncoid_\([A-Za-z0-9-]*\)_\([0-9:-]*\)$:{p;q}
+\:^incus snapshot create \([A-Za-z0-9][A-Za-z0-9.-]*\) zas-\(hourly\|daily\|weekly\|monthly\)-[0-9-]*$:{p;q}
+\:^lxc snapshot \([A-Za-z0-9][A-Za-z0-9.-]*\) zas-\(hourly\|daily\|weekly\|monthly\)-[0-9-]*$:{p;q}
+\:^sudo zfs destroy 'tank/\(incus\|lxd\)/\(containers\|virtual-machines\)/\([A-Za-z0-9][A-Za-z0-9.-]*\)'@syncoid_\([A-Za-z0-9][A-Za-z0-9.-]*\)_\([0-9GMT:-]*\)$:{p;q}
+\:^sudo zfs get -H syncoid\:sync 'tank/\(incus\|lxd\)/\(containers\|virtual-machines\)/\([A-Za-z0-9][A-Za-z0-9.-]*\)'$:{p;q}
+\:^sudo zfs get -Hpd 1 -t snapshot guid,creation '\(tank/\(incus\|lxd\)/\(containers\|virtual-machines\)/[A-Za-z0-9][A-Za-z0-9.-]*\)'$:{p;q}
+\:^sudo zfs list -o name,origin -t filesystem,volume -Hr 'tank/\(incus\|lxd\)/\(containers\|virtual-machines\)/\([A-Za-z0-9][A-Za-z0-9.-]*\)'$:{p;q}
+\:^sudo zfs send -I 'tank/\(incus\|lxd\)/\(containers\|virtual-machines\)/\([A-Za-z0-9][A-Za-z0-9.-]*\)'@'syncoid_\([A-Za-z0-9][A-Za-z0-9.-]*\)_\([0-9GMT:-]*\)' 'tank/\(incus\|lxd\)/\(containers\|virtual-machines\)/\([A-Za-z0-9][A-Za-z0-9.-]*\)'@'syncoid_\([A-Za-z0-9][A-Za-z0-9.-]*\)_\([0-9GMT:-]*\)' | lzop | mbuffer -q -s 128k -m 16M 2>/dev/null$:{p;q}
+\:^sudo zfs send -I 'tank/\(incus\|lxd\)/\(containers\|virtual-machines\)/\([A-Za-z0-9][A-Za-z0-9.-]*\)'@'snapshot-[A-Za-z0-9][A-Za-z0-9.-]*' 'tank/\(incus\|lxd\)/\(containers\|virtual-machines\)/\([A-Za-z0-9][A-Za-z0-9.-]*\)'@'syncoid_\([A-Za-z0-9][A-Za-z0-9.-]*\)_\([0-9GMT:-]*\)' | lzop | mbuffer -q -s 128k -m 16M 2>/dev/null$:{p;q}
+\:^sudo zfs send 'tank/\(incus\|lxd\)/\(containers\|virtual-machines\)/\([A-Za-z0-9][A-Za-z0-9.-]*\)@syncoid_\([A-Za-z0-9][A-Za-z0-9.-]*\)_\([0-9GMT:-]*\)'$:{p;q}
+\:^sudo zfs send 'tank/\(incus\|lxd\)/\(containers\|virtual-machines\)/\([A-Za-z0-9][A-Za-z0-9.-]*\)@syncoid_\([A-Za-z0-9][A-Za-z0-9.-]*\)_\([0-9GMT:-]*\)' | lzop | mbuffer -q -s 128k -m 16M 2>/dev/null$:{p;q}
+\:^sudo zfs send -nvP 'tank/\(incus\|lxd\)/\(containers\|virtual-machines\)/\([A-Za-z0-9][A-Za-z0-9.-]*\)@syncoid_\([A-Za-z0-9][A-Za-z0-9.-]*\)_\([0-9GMT:-]*\)'$:{p;q}
+\:^sudo zfs send -nvP -I 'tank/\(incus\|lxd\)/\(containers\|virtual-machines\)/\([A-Za-z0-9][A-Za-z0-9.-]*\)@syncoid_\([A-Za-z0-9][A-Za-z0-9.-]*\)_\([0-9GMT:-]*\)' 'tank/\(incus\|lxd\)/\(containers\|virtual-machines\)/\([A-Za-z0-9][A-Za-z0-9.-]*\)@syncoid_\([A-Za-z0-9][A-Za-z0-9.-]*\)_\([0-9GMT:-]*\)'$:{p;q}
+\:^sudo zfs snapshot 'tank/\(incus\|lxd\)/\(containers\|virtual-machines\)/\([A-Za-z0-9][A-Za-z0-9.-]*\)'@syncoid_\([A-Za-z0-9][A-Za-z0-9.-]*\)_\([0-9GMT:-]*\)$:{p;q}
 \:^zpool get -o value -H feature@extensible_dataset 'tank'$:{p;q}
 \:^sudo zfs send -t \([a-z0-9-]*\) | lzop | mbuffer -q -s 128k -m 16M 2>/dev/null$:{p;q}
 \:^sudo zfs send -nP -t \([a-z0-9-]*\)$:{p;q}
+\:^sudo zpool get -o value -H feature@extensible_dataset 'tank'$:{p;q}
+\:^sudo zfs send 'tank/\(incus\|lxd\)/\(containers\|virtual-machines\)/[A-Za-z0-9][A-Za-z0-9.-]*'\?@'\?\(snapshot-zas-\(hourly\|daily\|weekly\|monthly\)-[0-9-]*\|syncoid_[A-Za-z0-9_.:-]*\)'\( | lzop\)\?\( | mbuffer -q -s 128k -m 16M 2>/dev/null\)\?$:{p;q}
+\:^sudo zfs send -I 'tank/\(incus\|lxd\)/\(containers\|virtual-machines\)/[A-Za-z0-9][A-Za-z0-9.-]*'\?@'\?\(snapshot-zas-\(hourly\|daily\|weekly\|monthly\)-[0-9-]*\|syncoid_[A-Za-z0-9_.:-]*\)' 'tank/\(incus\|lxd\)/\(containers\|virtual-machines\)/[A-Za-z0-9][A-Za-z0-9.-]*'\?@'\?\(snapshot-zas-\(hourly\|daily\|weekly\|monthly\)-[0-9-]*\|syncoid_[A-Za-z0-9_.:-]*\)'\( | lzop\)\?\( | mbuffer -q -s 128k -m 16M 2>/dev/null\)\?$:{p;q}
+\:^sudo zfs send -nvP 'tank/\(incus\|lxd\)/\(containers\|virtual-machines\)/[A-Za-z0-9][A-Za-z0-9.-]*'\?@'\?\(snapshot-zas-\(hourly\|daily\|weekly\|monthly\)-[0-9-]*\|syncoid_[A-Za-z0-9_.:-]*\)'\( | lzop\)\?\( | mbuffer -q -s 128k -m 16M 2>/dev/null\)\?$:{p;q}
+\:^sudo zfs send -nvP -I 'tank/\(incus\|lxd\)/\(containers\|virtual-machines\)/[A-Za-z0-9][A-Za-z0-9.-]*'\?@'\?\(snapshot-zas-\(hourly\|daily\|weekly\|monthly\)-[0-9-]*\|syncoid_[A-Za-z0-9_.:-]*\)' 'tank/\(incus\|lxd\)/\(containers\|virtual-machines\)/[A-Za-z0-9][A-Za-z0-9.-]*'\?@'\?\(snapshot-zas-\(hourly\|daily\|weekly\|monthly\)-[0-9-]*\|syncoid_[A-Za-z0-9_.:-]*\)'\( | lzop\)\?\( | mbuffer -q -s 128k -m 16M 2>/dev/null\)\?$:{p;q}
+\:^sudo zfs send -nP 'tank/\(incus\|lxd\)/\(containers\|virtual-machines\)/[A-Za-z0-9][A-Za-z0-9.-]*'\?@'\?\(snapshot-zas-\(hourly\|daily\|weekly\|monthly\)-[0-9-]*\|syncoid_[A-Za-z0-9_.:-]*\)'\( | lzop\)\?\( | mbuffer -q -s 128k -m 16M 2>/dev/null\)\?$:{p;q}
+\:^sudo zfs send -nP -I 'tank/\(incus\|lxd\)/\(containers\|virtual-machines\)/[A-Za-z0-9][A-Za-z0-9.-]*'\?@'\?\(snapshot-zas-\(hourly\|daily\|weekly\|monthly\)-[0-9-]*\|syncoid_[A-Za-z0-9_.:-]*\)' 'tank/\(incus\|lxd\)/\(containers\|virtual-machines\)/[A-Za-z0-9][A-Za-z0-9.-]*'\?@'\?\(snapshot-zas-\(hourly\|daily\|weekly\|monthly\)-[0-9-]*\|syncoid_[A-Za-z0-9_.:-]*\)'\( | lzop\)\?\( | mbuffer -q -s 128k -m 16M 2>/dev/null\)\?$:{p;q}

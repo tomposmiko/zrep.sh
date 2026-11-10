@@ -1,5 +1,5 @@
-# into tank/zrep
+# Default destination: tank/zrep/<guest>; guest names must be unique.
 vhostA:vm1:incus-ct
 vhostB:vm2:incus-kvm
-# into tank/external
-vhostC:vm3:lxd-ct:external
+vhostC:vm3:lxd-ct
+vhostD:vm4:lxd-kvm

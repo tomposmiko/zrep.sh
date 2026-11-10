@@ -1,5 +1,13 @@
 #!/bin/bash
 
+set -euo pipefail
+
+limit_daily=""
+limit_weekly=""
+noop_mode=""
+debug_mode=""
+generate_debug_txt=""
+
 export PATH="/root/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # shellcheck disable=SC1091
@@ -10,7 +18,7 @@ export slack_url_post='https://slack.com/api/chat.postMessage'
 #slack_token='<Bot User OAuth Token>'
 #slack_channel='<channel>'
 # shellcheck disable=SC1091
-. /etc/slack-notification.conf
+# Notification configuration is loaded only when a message is sent.
 
 f_check_switch_param(){
   if echo x"$1" |grep -q ^x$;
@@ -34,21 +42,23 @@ f_usage(){
 }
 
 # Exit if no arguments!
-(( $# )) || { f_usage; exit 1; }
+(( $# )) || f_usage
 
 while [ "$#" -gt "0" ]; do
   case "$1" in
     -d|--daily)
-      PARAM=$2
+      PARAM=${2:-}
       f_check_switch_param "$PARAM"
-      limit_daily="$PARAM"
+      [[ "$PARAM" =~ ^[0-9]{1,6}$ ]] || f_usage
+      limit_daily=$((10#$PARAM))
       shift 2
     ;;
 
     -w|--weekly)
-      PARAM="$2"
+      PARAM="${2:-}"
       f_check_switch_param "$PARAM"
-      limit_weekly="$PARAM"
+      [[ "$PARAM" =~ ^[0-9]{1,6}$ ]] || f_usage
+      limit_weekly=$((10#$PARAM))
       shift 2
     ;;
 
@@ -78,9 +88,11 @@ date_today=$(date "+%Y-%m-%d")
 
 
 f_slack_post() {
-  slack_text="$1"
+  local slack_text="$1"
+  # shellcheck disable=SC1091
+  . /etc/slack-notification.conf
   # shellcheck disable=SC2154
-  curl -d "text=$slack_text" -d "channel=$slack_channel" -d "token=$slack_token" -s -X POST $slack_url_post > /dev/null
+  curl --fail --data-urlencode "text=$slack_text" --data-urlencode "channel=$slack_channel" --data-urlencode "token=$slack_token" -s -X POST "$slack_url_post" > /dev/null
 }
 
 f_date_to_epoch () {
@@ -105,7 +117,7 @@ f_date_diff (){
 if [ -n "$generate_debug_txt" ];
   then
     echo -n "Generating /root/zrep-check-debug.txt for debugging purposes... "
-    zfs list -t all -r tank/zrep -o name -H | grep -v "^tank/zrep$" | tee "/root/zrep-check-debug.txt" > /dev/null
+    zfs list -t all -r tank/zrep -o name -H -s name > /root/zrep-check-debug.txt
     echo "done."
     exit 0
 fi
@@ -113,33 +125,46 @@ fi
 if [ -z "$debug_mode" ];
   then
     snap_list_file=$(mktemp /tmp/snap_list_file.XXXX)
-    zfs list -t all -r tank/zrep -o name -H | grep -v "^tank/zrep$" | tee "$snap_list_file" > /dev/null
+    trap 'rm -f -- "$snap_list_file"' EXIT
+    zfs list -t all -r tank/zrep -o name -H -s name > "$snap_list_file"
   else
     snap_list_file='/root/zrep-check-debug.txt'
 fi
 
-dataset_list=$(grep -v @ "$snap_list_file")
+# Ignore organizational parents (root, extended host, and VM wrapper datasets).
+dataset_list=$(awk '!/@/ { names[$0]=1 } END {
+  for (name in names) {
+    parent=0
+    for (other in names) if (index(other, name "/")==1) parent=1
+    if (!parent && name!="tank/zrep") print name
+  }
+}' "$snap_list_file")
 
 f_check_late(){
   dataset="$1"
   freq="$2"
   days_limit="$3"
 
-  snap_last_item=$(grep "${dataset}@" "$snap_list_file" | grep -o "zas-${freq}-.*" | tail -1)
+  snap_last_item=$(awk -v prefix="${dataset}@" -v freq="$freq" '
+    index($0,prefix)==1 {
+      name=substr($0,length(prefix)+1)
+      sub(/^snapshot-/,"",name)
+      if (index(name,"zas-" freq "-")==1) print name
+    }' "$snap_list_file" | sort | tail -1)
   if [ "$snap_last_item" = "" ];
     then
       msg="DEBUG: !!! WARNING !!!: *${dataset}* has *NO VALID '${freq}' SNAPSHOT*!"
       if [ -z "$debug_mode" ];
         then
           echo "$msg"
-          [[ -z "$noop_mode" ]] && f_slack_post "$msg"
+          if [[ -z "$noop_mode" ]]; then f_slack_post "$msg"; fi
         else
           echo "DEBUG: $msg"
-          [[ -z "$noop_mode" ]] && f_slack_post "DEBUG: $msg"
+          if [[ -z "$noop_mode" ]]; then f_slack_post "DEBUG: $msg"; fi
       fi
       return 0
  fi
-  date_last_snap=$(echo "$snap_last_item" | grep -o "202[0-9]-[0-9][0-9]-[0-9][0-9]")
+  date_last_snap=$(echo "$snap_last_item" | grep -o "[0-9]\{4\}-[0-9][0-9]-[0-9][0-9]")
   days_diff=$(f_date_diff -d "$date_last_snap" "$date_today")
 
   if (( "$days_diff" > "$days_limit" ));
@@ -148,10 +173,10 @@ f_check_late(){
       if [ -z "$debug_mode" ];
         then
           echo "$msg"
-          [[ -z "$noop_mode" ]] && f_slack_post "$msg"
+          if [[ -z "$noop_mode" ]]; then f_slack_post "$msg"; fi
         else
           echo "DEBUG: $msg"
-          [[ -z "$noop_mode" ]] && f_slack_post "DEBUG: $msg"
+          if [[ -z "$noop_mode" ]]; then f_slack_post "DEBUG: $msg"; fi
       fi
   fi
 }
@@ -170,4 +195,4 @@ if [ "$limit_weekly" ];
     done
 fi
 
-[[ -z "$debug_mode" ]] && rm -f "$snap_list_file"
+exit 0
