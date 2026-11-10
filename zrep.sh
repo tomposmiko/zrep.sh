@@ -1,6 +1,11 @@
 #!/bin/bash
 # shellcheck disable=SC1091
-. "$(dirname "${BASH_SOURCE[0]}")/_zrep_common.sh"
+# Resolve installed symlinks before finding the adjacent helpers and child job.
+# Enable strict mode before loading helpers so a missing file cannot run a job.
+set -euo pipefail
+SCRIPT_PATH=$(readlink -f -- "${BASH_SOURCE[0]}")
+SCRIPT_DIR=$(dirname -- "$SCRIPT_PATH")
+. "$SCRIPT_DIR/_zrep_common.sh"
 
 HOST_IN_PATH=0
 LIST_SNAPSHOTS=false

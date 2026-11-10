@@ -65,6 +65,41 @@ if name == 'zfs':
                 self.assertEqual(transfers[0][-2:], [f'syncoid-backup@host:tank/{platform}/virtual-machines/vm', 'tank/zrep/vm/vm'])
                 self.assertEqual(transfers[1][-1], 'tank/zrep/vm/vm.block')
 
+    def test_symlink_chain_from_another_working_directory(self):
+        links = self.root / 'installed'
+        links.mkdir()
+        (links / 'job').symlink_to('../zrep.sh')
+        entry = links / 'zrep.sh'
+        entry.symlink_to('job')
+        result = subprocess.run(
+            [str(entry), '-c', str(self.config), '-s', 'vm'],
+            cwd=links, env=self.env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len([c for c in self.calls() if c[0] == 'syncoid']), 2)
+
+    def test_symlinked_batch_finds_real_child_script(self):
+        entry = self.bin / 'zrep-all.sh'
+        entry.symlink_to('../zrep-all.sh')
+        result = self.run_script(str(entry), ['-c', str(self.config)])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len([c for c in self.calls() if c[0] == 'syncoid']), 2)
+
+    def test_missing_helpers_stop_before_any_external_commands(self):
+        for helper in ('_zrep_common.sh', '_common.sh'):
+            for script in ('zrep.sh', 'zrep-all.sh'):
+                with self.subTest(helper=helper, script=script):
+                    path = self.root / helper
+                    saved = path.read_text()
+                    path.unlink()
+                    try:
+                        result = self.run_script(script, ['-c', str(self.config), '-s', 'vm'] if script == 'zrep.sh' else ['-c', str(self.config)])
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn(helper, result.stderr)
+                        self.assertNotIn('command not found', result.stderr)
+                        self.assertEqual(self.calls(), [])
+                    finally:
+                        path.write_text(saved)
+
     def test_snapshot_failure_stops_transfer(self):
         self.assertNotEqual(self.run_script(FAIL_COMMAND='ssh').returncode, 0)
         self.assertFalse(any(c[0] == 'syncoid' for c in self.calls()))

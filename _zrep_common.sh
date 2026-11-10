@@ -1,6 +1,8 @@
 #!/bin/bash
 # shellcheck disable=SC1091,SC2034
-. "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+set -euo pipefail
+COMMON_PATH=$(readlink -f -- "${BASH_SOURCE[0]}")
+. "$(dirname -- "$COMMON_PATH")/_common.sh"
 
 ARGS_SYNCOID=()
 DATASET_ZREP="tank/zrep"
