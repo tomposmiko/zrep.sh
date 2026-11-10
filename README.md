@@ -77,16 +77,37 @@ This review does not automatically restrict the deployed key or group access.
 The standalone `syncoid-shell` is an older alternative and is not what Puppet
 installs; its rules do not cover the current replication command set.
 
-`zsr.sh` and `lxdsr.sh` are legacy source snapshot helpers, not the retention
-interface above. `lxdsr.sh` currently only lists snapshots and does not invoke
-its deletion function; its unused function also contains old helper names.
-Use the reviewed retention interface rather than relying on these helpers.
+`zsr.sh` selects backup snapshots by literal substring of the snapshot name.
+It previews by default, validates arguments before querying ZFS, and limits
+selection to `tank/zrep` or an explicitly requested subtree. Patterns must be
+at least three characters and use only letters, digits, underscores, dots,
+colons or hyphens. They must contain a letter or digit. Dataset names are not
+searched. This replaces the former regex matching and immediate deletion.
+
+```
+zsr.sh --help
+zsr.sh --dataset tank/zrep/chief11 zas-daily-2026-10
+zsr.sh --dataset tank/zrep/chief11 --delete --confirm tank/zrep/chief11 zas-daily-2026-10
+```
+
+Execution requires an explicit `--dataset` and an identical `--confirm` value.
+Plans over 100 snapshots are rejected before deletion; `--max-delete N`
+explicitly changes that limit. Unexpected inventory entries abort the whole
+plan. Overlapping patterns are deduplicated, and only individual snapshot
+names are passed to `zfs destroy`, without recursive, clone or force flags.
+A destroy failure stops execution; earlier deletions cannot be rolled back.
+Serialize deletion with replication/retention jobs. Preview and execution query
+ZFS separately, so inspect the printed execution plan as well.
+
+`lxdsr.sh` remains a legacy source helper: it currently only lists snapshots
+and does not invoke its deletion function; its unused function also contains
+old helper names. It is not the retention interface above.
 
 ## Validation
 
 ```
 python3 -m unittest discover -s tests -v
-shellcheck -x zrep.sh zrep-all.sh zrep-gc.sh zrep-check.sh _common.sh _zrep_common.sh
+shellcheck -x zsr.sh zrep.sh zrep-all.sh zrep-gc.sh zrep-check.sh _common.sh _zrep_common.sh
 ```
 
 Tests use isolated command mocks and never contact hosts or modify ZFS.

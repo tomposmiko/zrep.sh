@@ -100,6 +100,87 @@ if name == 'zfs':
                     finally:
                         path.write_text(saved)
 
+    def test_zsr_help_and_missing_arguments_never_query_zfs(self):
+        for args, code in [(['--help'], 0), (['-h'], 0), ([], 1)]:
+            with self.subTest(args=args):
+                result = self.run_script('zsr.sh', args)
+                self.assertEqual(result.returncode, code, result.stderr)
+                self.assertIn('Usage:', result.stdout + result.stderr)
+                self.assertEqual(self.calls(), [])
+
+    def test_zsr_invalid_arguments_never_query_zfs(self):
+        for args in [ [''], ['.*'], ['.'], ['-f', 'zas'], ['--dataset'],
+                      ['--dataset', 'tank', 'zas'], ['--dataset', 'tank/zrep/../other', 'zas'],
+                      ['--dataset', 'tank/zrep-victim', 'zas'], ['zas', '--max-delete', '0'],
+                      ['zas', '--max-delete', '-1'], ['zas', '--max-delete', '1000001'],
+                      ['zas', '--delete'], ['zas', '--confirm', 'tank/zrep'],
+                      ['zas', '--delete', '--confirm', 'tank/zrep'],
+                      ['zas', '--delete', '--dataset', 'tank/zrep/ct', '--confirm', 'tank/zrep'] ]:
+            with self.subTest(args=args):
+                result = self.run_script('zsr.sh', args)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.calls(), [])
+
+    def test_zsr_preview_matches_snapshot_names_literally(self):
+        inventory = 'tank/zrep/vm@old.name\ntank/zrep/vm@oldXname\ntank/zrep/old.name@unrelated\n'
+        result = self.run_script('zsr.sh', ['old.name'], SNAPSHOTS=inventory)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('  tank/zrep/vm@old.name\n', result.stdout)
+        self.assertNotIn('oldXname', result.stdout)
+        self.assertNotIn('unrelated', result.stdout)
+        self.assertIn('DRY RUN', result.stdout)
+        self.assertFalse(any('destroy' in c for c in self.calls()))
+
+    def test_zsr_delete_deduplicates_and_never_uses_recursive_flags(self):
+        inventory = 'tank/zrep/vm@old.name\ntank/zrep/vm@old.name\ntank/zrep/vm/disk@old.disk\ntank/zrep/vm@new.name\n'
+        result = self.run_script('zsr.sh', ['--dataset', 'tank/zrep/vm', '--delete', '--confirm', 'tank/zrep/vm', 'old.', 'name'], SNAPSHOTS=inventory)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([c for c in self.calls() if 'destroy' in c], [
+            ['zfs', 'destroy', 'tank/zrep/vm@old.name'],
+            ['zfs', 'destroy', 'tank/zrep/vm/disk@old.disk'],
+            ['zfs', 'destroy', 'tank/zrep/vm@new.name']])
+
+    def test_zsr_rejects_bad_inventory_before_any_deletion(self):
+        for bad in ('tank/zrep/vm', 'tank/zrep/vm-other@old.name',
+                    'tank/zrep/vm@old.name%new.name', 'tank/zrep/vm@old.name,new.name',
+                    'tank/zrep/vm@old.name;id', 'tank/zrep/vm/../secret@old.name'):
+            with self.subTest(bad=bad):
+                result = self.run_script('zsr.sh', ['--dataset', 'tank/zrep/vm', '--delete', '--confirm', 'tank/zrep/vm', 'old'], SNAPSHOTS='tank/zrep/vm@old.name\n' + bad + '\n')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(any('destroy' in c for c in self.calls()))
+
+    def test_zsr_caps_whole_plan_before_deletion(self):
+        result = self.run_script('zsr.sh', ['--dataset', 'tank/zrep', '--delete', '--confirm', 'tank/zrep', '--max-delete', '1', 'old'], SNAPSHOTS='tank/zrep/vm@old.one\ntank/zrep/vm@old.two\n')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('exceeds', result.stderr)
+        self.assertFalse(any('destroy' in c for c in self.calls()))
+
+    def test_zsr_default_cap_and_explicit_override(self):
+        inventory = ''.join(f'tank/zrep/vm@old.{i}\n' for i in range(101))
+        result = self.run_script('zsr.sh', ['--dataset', 'tank/zrep', '--delete', '--confirm', 'tank/zrep', 'old'], SNAPSHOTS=inventory)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any('destroy' in c for c in self.calls()))
+        result = self.run_script('zsr.sh', ['--max-delete', '101', 'old'], SNAPSHOTS=inventory)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Selected snapshots: 101', result.stdout)
+        self.assertFalse(any('destroy' in c for c in self.calls()))
+
+    def test_zsr_listing_failure_and_empty_inventory_never_delete(self):
+        result = self.run_script('zsr.sh', ['old'], FAIL_COMMAND='zfs')
+        self.assertNotEqual(result.returncode, 0)
+        result = self.run_script('zsr.sh', ['--dataset', 'tank/zrep', '--delete', '--confirm', 'tank/zrep', 'old'], SNAPSHOTS='')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('No matching snapshots', result.stdout)
+        self.assertFalse(any('destroy' in c for c in self.calls()))
+
+    def test_zsr_stops_on_failed_destroy(self):
+        # Override the mock so a list succeeds and only destroy fails.
+        mock = self.bin / 'mock'
+        mock.write_text(mock.read_text().replace("if name == os.environ.get('FAIL_COMMAND'):", "if name == 'zfs' and sys.argv[1] == 'destroy':"))
+        result = self.run_script('zsr.sh', ['--dataset', 'tank/zrep', '--delete', '--confirm', 'tank/zrep', 'old'], SNAPSHOTS='tank/zrep/vm@old.one\ntank/zrep/vm@old.two\n')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual([c for c in self.calls() if 'destroy' in c], [['zfs', 'destroy', 'tank/zrep/vm@old.one']])
+
     def test_snapshot_failure_stops_transfer(self):
         self.assertNotEqual(self.run_script(FAIL_COMMAND='ssh').returncode, 0)
         self.assertFalse(any(c[0] == 'syncoid' for c in self.calls()))
