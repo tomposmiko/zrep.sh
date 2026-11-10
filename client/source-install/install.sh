@@ -55,10 +55,13 @@ verify_sudo() {
         found {gsub(/^[[:space:]]+|[[:space:]]+$/, ""); if (length) print}
         END {if (!found) exit 1}
     ') || return 1
-    [[ "$grants" == "(root) NOPASSWD: NOSETENV: $GATEWAY *" ]] || {
+    # sudo may print these independent tags in either order. Keep the run-as
+    # identity, command and single-grant requirement exact in both cases.
+    if [[ "$grants" != "(root) NOPASSWD: NOSETENV: $GATEWAY *" &&
+          "$grants" != "(root) NOSETENV: NOPASSWD: $GATEWAY *" ]]; then
         printf 'Extra or unexpected sudo grants:\n%s\n' "$grants" >&2
         return 1
-    }
+    fi
 }
 
 verify_ssh() {

@@ -33,8 +33,15 @@ class SourceInstallTest(unittest.TestCase):
     def test_extra_sudo_grants_fail_closed(self):
         prefix = 'User syncoid-backup may run the following commands on v201:\n'
         grant = '    (root) NOPASSWD: NOSETENV: /usr/local/sbin/pts-zrep-source *\n'
-        for text, valid in ((prefix + grant, True), (prefix, False),
+        reordered = grant.replace('NOPASSWD: NOSETENV:', 'NOSETENV: NOPASSWD:')
+        for text, valid in ((prefix + grant, True), (prefix + reordered, True), (prefix, False),
                             (prefix + grant + '    (ALL) ALL\n', False),
+                            (prefix + reordered + '    (ALL) ALL\n', False),
+                            (prefix + reordered.replace('NOSETENV:', 'SETENV:'), False),
+                            (prefix + reordered.replace('NOPASSWD:', 'PASSWD:'), False),
+                            (prefix + reordered.replace('(root)', '(ALL)'), False),
+                            (prefix + reordered.replace('NOSETENV: ', ''), False),
+                            (prefix + reordered + reordered, False),
                             (prefix + grant.replace('(root)', '(ALL)'), False),
                             ('unrecognized output', False)):
             result = self.shell('verify_sudo <<\'POLICY\'\n' + text + '\nPOLICY\n')
@@ -106,7 +113,7 @@ sshd() {{
 sudo() {{
     printf 'sudo %s\\n' "$*" >> "$CALLS"
     printf 'User syncoid-backup may run the following commands on v201:\\n'
-    printf '    (root) NOPASSWD: NOSETENV: %s *\\n' "$GATEWAY"
+    printf '    (root) NOSETENV: NOPASSWD: %s *\\n' "$GATEWAY"
     if [[ "$FAIL_CASE" == sudo ]]; then printf '    (ALL) ALL\\n'; fi
 }}
 usermod() {{ printf 'usermod %s\\n' "$*" >> "$CALLS"; }}
