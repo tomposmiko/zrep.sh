@@ -1,5 +1,16 @@
 # Source-side SSH access
 
+For hosts without Puppet, build a standalone installer bundle:
+
+```
+bash client/build-source-bundle.sh --output /tmp/zrep-source-install.tar.gz
+```
+
+The builder reads the gateway from the sibling `puppet` checkout (override with
+`--puppet PATH`) and bundles it with the installer, checksums and
+[manual deployment instructions](source-install/README.md). It does not deploy
+anything. The archive is self-contained; no Puppet checkout is needed on v201.
+
 The sibling Puppet repository installs `pts_only_shell::zrep` automatically
 when it manages `pts_users::users::u_syncoid_backup`. It owns the restricted
 login shell `/usr/local/sbin/pts-zrep-ssh`, privileged command gateway
