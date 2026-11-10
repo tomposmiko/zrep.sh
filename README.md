@@ -90,6 +90,33 @@ zsr.sh --dataset tank/zrep/chief11 zas-daily-2026-10
 zsr.sh --dataset tank/zrep/chief11 --delete --confirm tank/zrep/chief11 zas-daily-2026-10
 ```
 
+Date and count protections can be combined:
+
+```
+# Preview matching snapshots created before local midnight on October 1.
+zsr.sh --dataset tank/zrep/chief11 --before 2026-10-01 zas-daily
+# Preview snapshots older than seven days, retaining at least five matches.
+zsr.sh --dataset tank/zrep/chief11 --older-than 7d --keep-at-least 5 zas-daily
+# Add --delete --confirm tank/zrep/chief11 to execute either preview's policy.
+```
+
+`--before` accepts a calendar date or a quoted date/time such as
+`"2026-10-01 12:30:00+02:00"`. Without a timezone, local time is used.
+`--older-than` accepts positive integer ages with `s`, `m`, `h`, `d`, or `w`
+units (seconds, minutes, hours, 24-hour days, seven-day weeks). Future absolute
+cutoffs and invalid metadata are rejected. Relative ages are resolved once
+at startup. Snapshots exactly at a cutoff are protected.
+
+Retention uses actual ZFS creation timestamps, not embedded name dates.
+`--keep-at-least N` retains the newest N **matching** snapshots independently
+for each dataset; unrelated snapshot series do not count. Recent matching
+snapshots count towards that minimum. Overlapping patterns count each snapshot
+once. If there are N or fewer matching snapshots, nothing in that dataset is
+deleted. Equal creation timestamps are ordered by snapshot name for stable
+selection. All supplied protections must permit deletion: combining an absolute
+cutoff, minimum age and minimum count never weakens any one of them. The count
+defaults to zero; no implicit minimum is added. Patterns remain mandatory.
+
 Execution requires an explicit `--dataset` and an identical `--confirm` value.
 Plans over 100 snapshots are rejected before deletion; `--max-delete N`
 explicitly changes that limit. Unexpected inventory entries abort the whole

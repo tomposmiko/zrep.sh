@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -179,6 +180,107 @@ if name == 'zfs':
         mock.write_text(mock.read_text().replace("if name == os.environ.get('FAIL_COMMAND'):", "if name == 'zfs' and sys.argv[1] == 'destroy':"))
         result = self.run_script('zsr.sh', ['--dataset', 'tank/zrep', '--delete', '--confirm', 'tank/zrep', 'old'], SNAPSHOTS='tank/zrep/vm@old.one\ntank/zrep/vm@old.two\n')
         self.assertNotEqual(result.returncode, 0)
+        self.assertEqual([c for c in self.calls() if 'destroy' in c], [['zfs', 'destroy', 'tank/zrep/vm@old.one']])
+
+    def test_zsr_absolute_cutoff_is_exclusive_and_uses_creation_time(self):
+        inventory = ('tank/zrep/vm@old.label\t1727740799\n'
+                     'tank/zrep/vm@old.boundary\t1727740800\n'
+                     'tank/zrep/vm@old.newer\t1727740801\n')
+        result = self.run_script('zsr.sh', ['--before', '2024-10-01T00:00:00Z', 'old'], SNAPSHOTS=inventory)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('  tank/zrep/vm@old.label\n', result.stdout)
+        self.assertNotIn('old.boundary', result.stdout)
+        self.assertNotIn('old.newer', result.stdout)
+        self.assertFalse(any('destroy' in c for c in self.calls()))
+
+    def test_zsr_before_timezone_offsets_and_local_midnight(self):
+        inventory = 'tank/zrep/vm@old.before\t1727740799\ntank/zrep/vm@old.boundary\t1727740800\n'
+        for cutoff in ('2024-10-01', '2024-10-01 00:00', '2024-10-01 02:00:00+02:00'):
+            with self.subTest(cutoff=cutoff):
+                result = self.run_script('zsr.sh', ['--before', cutoff, 'old'], SNAPSHOTS=inventory, TZ='UTC')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('  tank/zrep/vm@old.before\n', result.stdout)
+                self.assertNotIn('old.boundary', result.stdout)
+
+    def test_zsr_age_units_and_exact_boundary(self):
+        date = self.bin / 'date'
+        date.write_text('#!/bin/bash\nif [[ $# == 1 && $1 == +%s ]]; then echo 1000000000; else exec /usr/bin/date "$@"; fi\n')
+        date.chmod(0o755)
+        for unit, seconds in [('s', 1), ('m', 60), ('h', 3600), ('d', 86400), ('w', 604800)]:
+            with self.subTest(unit=unit):
+                cutoff = 1000000000-seconds
+                inventory = (f'tank/zrep/vm@old.before\t{cutoff-1}\n'
+                             f'tank/zrep/vm@old.boundary\t{cutoff}\n'
+                             f'tank/zrep/vm@old.after\t{cutoff+1}\n')
+                result = self.run_script('zsr.sh', ['--older-than', '1'+unit, 'old'], SNAPSHOTS=inventory)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('  tank/zrep/vm@old.before\n', result.stdout)
+                self.assertNotIn('old.boundary', result.stdout)
+                self.assertNotIn('old.after', result.stdout)
+
+    def test_zsr_relative_age_and_minimum_apply_per_dataset(self):
+        now = int(time.time())
+        inventory = ''.join(f'tank/zrep/{guest}@old.{i}\t{now-days*86400}\n'
+                            for guest in ('vm', 'other')
+                            for i, days in ((1, 30), (2, 20), (3, 10), (4, 1)))
+        result = self.run_script('zsr.sh', ['--older-than', '7d', '--keep-at-least', '2', 'old'], SNAPSHOTS=inventory)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for guest in ('vm', 'other'):
+            self.assertIn(f'  tank/zrep/{guest}@old.1\n', result.stdout)
+            self.assertIn(f'  tank/zrep/{guest}@old.2\n', result.stdout)
+            self.assertNotIn(f'@old.3', result.stdout)
+            self.assertNotIn(f'@old.4', result.stdout)
+        self.assertIn('Selected snapshots: 4', result.stdout)
+
+    def test_zsr_minimum_counts_only_matching_series(self):
+        inventory = ('tank/zrep/vm@old.one\t1000\n'
+                     'tank/zrep/vm@old.two\t2000\n'
+                     'tank/zrep/vm@unrelated.newer\t3000\n')
+        result = self.run_script('zsr.sh', ['--keep-at-least', '2', 'old'], SNAPSHOTS=inventory)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Selected snapshots: 0', result.stdout)
+        # This remains true if a dataset has fewer matches than the minimum.
+        result = self.run_script('zsr.sh', ['--keep-at-least', '5', 'old'], SNAPSHOTS=inventory)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Selected snapshots: 0', result.stdout)
+
+    def test_zsr_combined_cutoffs_choose_more_protective_date(self):
+        now = int(time.time())
+        cutoff = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now - 14*86400))
+        inventory = f'tank/zrep/vm@old.one\t{now-20*86400}\ntank/zrep/vm@old.two\t{now-10*86400}\n'
+        result = self.run_script('zsr.sh', ['--before', cutoff, '--older-than', '7d', 'old'], SNAPSHOTS=inventory)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('  tank/zrep/vm@old.one\n', result.stdout)
+        self.assertNotIn('old.two', result.stdout)
+        newer = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now - 86400))
+        result = self.run_script('zsr.sh', ['--before', newer, '--older-than', '14d', 'old'], SNAPSHOTS=inventory)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('  tank/zrep/vm@old.one\n', result.stdout)
+        self.assertNotIn('old.two', result.stdout)
+
+    def test_zsr_retention_invalid_input_never_queries_zfs(self):
+        for option, value in [('--before', 'yesterday'), ('--before', '2024-02-30'),
+                              ('--before', '2099-01-01'), ('--before', '2024-01-01 25:00'),
+                              ('--older-than', '0d'), ('--older-than', '-7d'),
+                              ('--older-than', '7months'), ('--older-than', '1d;id'),
+                              ('--keep-at-least', '-1'), ('--keep-at-least', '1.5')]:
+            with self.subTest(option=option, value=value):
+                result = self.run_script('zsr.sh', [option, value, 'old'])
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.calls(), [])
+
+    def test_zsr_bad_creation_metadata_aborts_whole_plan(self):
+        for row in ('tank/zrep/vm@old.two', 'tank/zrep/vm@old.two\tinvalid',
+                    'tank/zrep/vm@old.two\t-1', 'tank/zrep/vm@old.two\t999999999999',
+                    'tank/zrep/vm@old.one\t2000', 'tank/zrep/vm@old.two\t2000\textra'):
+            with self.subTest(row=row):
+                result = self.run_script('zsr.sh', ['--dataset', 'tank/zrep', '--delete', '--confirm', 'tank/zrep', '--older-than', '7d', 'old'], SNAPSHOTS='tank/zrep/vm@old.one\t1000\n'+row+'\n')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(any('destroy' in c for c in self.calls()))
+
+    def test_zsr_retention_deletes_only_eligible_snapshots(self):
+        result = self.run_script('zsr.sh', ['--dataset', 'tank/zrep', '--delete', '--confirm', 'tank/zrep', '--before', '2024-10-01', '--keep-at-least', '1', 'old'], SNAPSHOTS='tank/zrep/vm@old.one\t1000\ntank/zrep/vm@old.two\t2000\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([c for c in self.calls() if 'destroy' in c], [['zfs', 'destroy', 'tank/zrep/vm@old.one']])
 
     def test_snapshot_failure_stops_transfer(self):
