@@ -5,9 +5,11 @@ PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 usage() {
     cat <<'HELP'
-Usage: zsr.sh [OPTIONS] PATTERN [PATTERN ...]
+Usage: zsr.sh [OPTIONS] [PATTERN ...]
 
 Preview snapshots whose NAME contains any literal PATTERN (not a regex).
+With no patterns, retention options apply to ALL snapshots in the subtree.
+Specify at least one pattern or --before, --older-than or --keep-at-least.
 Patterns must have at least 3 characters, contain a letter or digit, and use
 only letters, digits, underscores, dots, colons or hyphens. Dataset names
 are not searched. No snapshots are deleted by default.
@@ -36,7 +38,7 @@ Examples:
 
 All specified date, age and count protections apply together. Dates use ZFS
 creation times, not dates embedded in names. Snapshots at a cutoff are kept.
-Example: zsr.sh --older-than 7d --keep-at-least 5 zas-daily
+Example: zsr.sh --dataset tank/zrep/chief11 --older-than 7d --keep-at-least 5
 
 Only individual snapshots are destroyed, without recursive/clone/force flags.
 Stop concurrent replication/retention jobs before deletion. A failed destroy
@@ -81,9 +83,9 @@ while (($#)); do
         *) PATTERNS+=("$1"); shift ;;
     esac
 done
-if ((${#PATTERNS[@]} == 0)); then
+if [[ ${#PATTERNS[@]} == 0 && "$RETENTION" == false ]]; then
     usage >&2
-    fail "At least one literal snapshot-name pattern is required"
+    fail "Specify a literal snapshot-name pattern or a retention option"
 fi
 [[ "$DATASET" =~ ^tank/zrep(/[A-Za-z0-9][A-Za-z0-9_.:-]*)*$ ]] || fail "Dataset must be tank/zrep or a valid descendant"
 [[ "$MAX_DELETE" =~ ^[0-9]{1,7}$ ]] || fail "Invalid --max-delete value"
@@ -155,15 +157,18 @@ while IFS= read -r row; do
     fi
     CREATED[$snapshot]=$created
     name=${snapshot#*@}
+    matched=false
+    if ((${#PATTERNS[@]} == 0)); then matched=true; fi
     for pattern in "${PATTERNS[@]}"; do
         if [[ "$name" == *"$pattern"* ]]; then
-            if [[ ! -v "SEEN[$snapshot]" ]]; then
-                PLAN+=("$snapshot")
-                SEEN[$snapshot]=1
-            fi
+            matched=true
             break
         fi
     done
+    if [[ "$matched" == true && ! -v "SEEN[$snapshot]" ]]; then
+        PLAN+=("$snapshot")
+        SEEN[$snapshot]=1
+    fi
 done <<< "$INVENTORY"
 
 if [[ "$RETENTION" == true && ${#PLAN[@]} -gt 0 ]]; then

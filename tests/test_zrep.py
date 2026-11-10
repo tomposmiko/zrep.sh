@@ -182,6 +182,38 @@ if name == 'zfs':
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual([c for c in self.calls() if 'destroy' in c], [['zfs', 'destroy', 'tank/zrep/vm@old.one']])
 
+    def test_zsr_without_pattern_applies_retention_to_all_series(self):
+        inventory = ('tank/zrep/vm@zas-daily-old\t1000\n'
+                     'tank/zrep/vm@syncoid_helper\t2000\n'
+                     'tank/zrep/vm@manual-new\t3000\n')
+        result = self.run_script('zsr.sh', ['-d', 'tank/zrep/vm', '--before', '2024-08-01', '--keep-at-least', '1'], SNAPSHOTS=inventory)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('  tank/zrep/vm@zas-daily-old\n', result.stdout)
+        self.assertIn('  tank/zrep/vm@syncoid_helper\n', result.stdout)
+        self.assertNotIn('manual-new', result.stdout)
+        self.assertFalse(any('destroy' in c for c in self.calls()))
+
+    def test_zsr_patternless_age_and_count_policies(self):
+        for args in (['--older-than', '7d'], ['--keep-at-least', '1']):
+            with self.subTest(args=args):
+                inventory = 'tank/zrep/vm@old.one\t1000\ntank/zrep/vm@old.two\t2000\n'
+                result = self.run_script('zsr.sh', args, SNAPSHOTS=inventory)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('  tank/zrep/vm@old.one\n', result.stdout)
+
+    def test_zsr_patternless_delete_retains_minimum_per_dataset(self):
+        inventory = ''.join(f'tank/zrep/{guest}@snapshot{i}\t{i*1000}\n' for guest in ('vm', 'other') for i in (1, 2))
+        result = self.run_script('zsr.sh', ['--dataset', 'tank/zrep', '--delete', '--confirm', 'tank/zrep', '--keep-at-least', '1'], SNAPSHOTS=inventory)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sorted(c[-1] for c in self.calls() if 'destroy' in c), ['tank/zrep/other@snapshot1', 'tank/zrep/vm@snapshot1'])
+
+    def test_zsr_no_pattern_and_no_policy_never_queries_zfs(self):
+        for args in ([], ['--dataset', 'tank/zrep/vm'], ['--dataset', 'tank/zrep', '--delete', '--confirm', 'tank/zrep'], ['--max-delete', '100']):
+            with self.subTest(args=args):
+                result = self.run_script('zsr.sh', args)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.calls(), [])
+
     def test_zsr_absolute_cutoff_is_exclusive_and_uses_creation_time(self):
         inventory = ('tank/zrep/vm@old.label\t1727740799\n'
                      'tank/zrep/vm@old.boundary\t1727740800\n'
