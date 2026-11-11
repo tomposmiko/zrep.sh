@@ -54,6 +54,100 @@ ZFS inventory failures abort. Inspect dry-run output before using `-f`.
 a configuration-based inventory and detect an entirely missing guest; the
 legacy checker only sees existing datasets and cannot detect that case.
 
+## Instance configuration coverage
+
+`zrep-coverage.sh` is a read-only Bash audit that starts with live Incus/LXD
+instances, including stopped guests, rather than only existing configured
+jobs. It compares each instance with `/etc/zrep/zrep.conf` and the destination
+dataset layout. It reports missing/wrong source entries, destination collisions,
+missing container/VM components and stale configuration for removed instances.
+It lists only destination filesystem/volume names and types, not snapshots.
+Unsupported projects and source storage layouts are reported explicitly.
+Custom attached volumes, freshness, contents and restores remain separate checks.
+
+```bash
+zrep-coverage.sh --hosts-file /etc/zrep/coverage-hosts.txt --verbose
+# A source without Puppet needs only the updated gateway and existing SSH key:
+zrep-coverage.sh --host v201.sg.svfx --verbose
+```
+
+The audit also queries hosts already present in `zrep.conf`. Independent host
+registration is necessary to detect a whole source missing from that config.
+The sibling Puppet backup role collects managed Incus source registrations and
+includes `v201.sg.svfx` explicitly by default. Additional unmanaged hosts can
+be listed in `zrep_coverage_extra_hosts` or supplied with repeatable `--host`.
+If SSH names differ between the inventory and config, explicitly map verified
+equivalent names with `--host-alias v201=v201.sg.svfx`. Instance exclusions use
+repeatable `--ignore-instance NAME` and apply literally across all hosts.
+
+Each source must support the exact `zrep inventory` restricted-gateway request.
+The updated gateway reads local Unix-socket APIs, detects Incus/LXD locally and
+returns only instance identities and root storage metadata. No instance config
+secrets are exposed. Source API/SSH failures and malformed/stale responses
+produce alerts; valid empty inventories are accepted. Puppet is not required
+on v201: rebuild and install the source bundle using the existing standalone
+installer instructions before enabling the check. Old gateways deny the new
+request. No new shell or general Incus administration permissions are granted.
+
+On backup11, Puppet installs this script and runs it daily at 06:22 using the
+existing direct Slack/email wrapper. One combined report goes to Slack and
+root cron mail, using the same webhook as the Samba coverage audit. The wrapper
+is not part of this standalone repository. The audit itself sends no messages,
+runs no backups and modifies no datasets. Healthy runs are silent; exit 1
+indicates findings and exit 2 means the audit could not run. `--extended-vault`
+checks explicitly scheduled `zrep.sh -E` layouts; the standard batch layout is
+the default. Run `bash tests/test_coverage.sh` for mocked SSH/ZFS coverage tests.
+
+## Incus snapshot cleanup
+
+`isr/isr.sh` cleans up Incus-managed snapshots of containers and VMs. Run it locally
+as an Incus administrator. It uses the local socket, isolates client aliases and
+remote settings, and requires either `--instance NAME` or `--all-instances`.
+In a cluster, only instances on the local member are included. One project is
+checked per run; the default project is `default`. LXD is not supported.
+
+Every run previews by default. Optional literal patterns match snapshot names,
+so `zas-daily` selects the usual zrep daily snapshots. Without patterns, provide
+a retention option: all names then match, including manually created snapshots.
+
+```sh
+# Preview old daily snapshots, preserving five matching snapshots per instance.
+bash isr/isr.sh --instance chief11 --older-than 14d --keep-at-least 5 zas-daily
+
+# Preview all snapshot names, including manual snapshots, in the default project.
+bash isr/isr.sh --project default --all-instances --before 2026-08-01 --keep-at-least 20
+
+# Delete the selection after reviewing the same command without --delete/--confirm.
+bash isr/isr.sh --project default --instance chief11 --older-than 14d \
+  --keep-at-least 5 zas-daily --delete --confirm default/chief11
+```
+
+`--before` and `--older-than` use Incus creation timestamps, not dates embedded
+in names. Snapshots exactly at a cutoff are kept. All supplied protections apply
+together. `--keep-at-least N` preserves the newest N **matching** snapshots per
+instance; matching snapshots protected by date/age count toward that minimum.
+Its default is zero. The default deletion limit is 100 snapshots per run; use
+`--max-delete N` to change it explicitly.
+
+Deletion requires an explicit `--project` and an exact scope confirmation:
+`--confirm default/chief11` for one instance, or `--confirm 'default/*'` with
+`--all-instances`. Only `incus snapshot delete INSTANCE SNAPSHOT` is used,
+without force flags. Instance deletion and raw ZFS snapshot deletion are never
+used. The restricted backup account is not given cleanup permissions.
+
+The script validates the complete selected inventory before deleting and
+rechecks instance identity and snapshots before each deletion. Invalid metadata,
+inventory changes and failed deletions stop the run. Stop concurrent snapshot,
+replication, retention and instance-migration jobs: a race between the final
+read and deletion is still possible. Earlier deletions cannot be undone.
+Verify that required backups and incremental replication bases are retained;
+this tool does not check the backup destination.
+
+Requires Bash 4.3+, jq, GNU coreutils and an Incus client supporting
+`snapshot list`/`snapshot delete`. Use `bash isr/isr.sh --help` for all options.
+The legacy `lxdsr.sh` is unchanged. Run the mocked safety tests with
+`bash isr/tests/test_isr.sh`; they do not contact Incus or delete real snapshots.
+
 ## Puppet integration
 
 The sibling Puppet repository owns:
