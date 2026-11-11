@@ -11,6 +11,13 @@ The builder reads the gateway from the sibling `puppet` checkout (override with
 [manual deployment instructions](source-install/README.md). It does not deploy
 anything. The archive is self-contained; no Puppet checkout is needed on v201.
 
+Rebuild/install the updated bundle for the configuration coverage audit. Its
+restricted gateway supports the exact read-only `zrep inventory` request,
+reading local Incus/LXD Unix-socket APIs and returning only instance identity
+and root storage metadata. It does not expose full instance configs or user
+data and requires no Puppet agent or inventory cron on v201. Existing SSH keys,
+snapshot permissions and source-only replication restrictions remain in use.
+
 The sibling Puppet repository installs `pts_only_shell::zrep` automatically
 when it manages `pts_users::users::u_syncoid_backup`. It owns the restricted
 login shell `/usr/local/sbin/pts-zrep-ssh`, privileged command gateway

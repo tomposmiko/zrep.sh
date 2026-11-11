@@ -9,6 +9,14 @@ service. It supports the default Incus/LXD project and ZFS source paths beneath
 `tank/{incus,lxd}/{containers,virtual-machines}`. The account's public key is an
 explicit input; no production key or private key is bundled.
 
+The updated gateway also accepts the exact read-only `zrep inventory` request.
+It detects local Incus/LXD Unix sockets and reads instance identity/root storage
+metadata across projects, filtering clustered results to the local member.
+Full configs, profiles, user data and secrets are not returned. The coverage
+audit reports projects/layouts that the existing replication jobs cannot
+handle; this metadata request does not broaden snapshot/replication permissions.
+v201 needs no Puppet agent or scheduled inventory exporter for this check.
+
 Install the matching zrep client (`ab1ed99` or later, including its helpers) on
 the backup server first: `--no-clone-handling` is required. Serialize the rollout
 with backup jobs. Keep a separate administrator connection open throughout.
@@ -89,6 +97,19 @@ The first must succeed and `id` must be denied. Check `sudo -l -U syncoid-backup
 on v201, then run a full/incremental guest backup and a restore check. Existing
 sessions/processes retain privileges: explicitly close old backup connections
 and review remaining processes before considering the rollout complete.
+
+Verify coverage discovery from backup11 after upgrading the gateway:
+
+```bash
+ssh -o BatchMode=yes syncoid-backup@v201.sg.svfx 'zrep inventory'
+```
+
+This command opens an SSH connection and reads metadata only; it does not
+create snapshots or modify datasets. Expect versioned JSON with an instance
+list (including an explicitly empty list when no instances exist). An old
+gateway denies this request; rebuild the bundle from the updated Puppet
+checkout before installing it. The coverage audit cannot verify v201 until
+the updated gateway and a trusted existing SSH host key are available.
 
 For manual recovery, `files.tsv` maps each changed path to its original backup
 file; `-` means the path did not previously exist. Restore those files with
