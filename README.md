@@ -41,6 +41,15 @@ scheduler invocations (for example with `flock`). The batch command continues
 after job failures and exits nonzero if any job failed. This changes the former
 always-success exit status; notification wrappers should handle it accordingly.
 
+When syncoid fails, zrep adds a read-only comparison of source and backup snapshot
+GUIDs for the failed dataset. The error explicitly reports when there are no
+common snapshots, even if syncoid's original error only mentions bookmark
+listing. Matching names alone do not establish a common snapshot. Failed queries
+or malformed metadata are reported as an unavailable check, not as missing
+history. Source bookmarks are not checked, so absence of common snapshots alone
+does not prove a full replication is required. The original syncoid error and
+exit status are preserved; no automatic reset, rename or deletion is performed.
+
 ## Retention and checks
 
 `zrep-gc.sh [-f] [-s literal-substring] DATASET KEEP` defaults to dry run.

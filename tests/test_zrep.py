@@ -34,7 +34,14 @@ name = Path(sys.argv[0]).name
 with open(os.environ['CALL_LOG'], 'a') as stream:
     stream.write(json.dumps([name, *sys.argv[1:]]) + '\\n')
 if name == os.environ.get('FAIL_COMMAND'):
-    sys.exit(1)
+    sys.exit(int(os.environ.get('FAIL_STATUS', '1')))
+if name == 'syncoid' and os.environ.get('FAIL_BLOCK') and sys.argv[-2].endswith('.block'):
+    sys.exit(7)
+if name == 'ssh' and 'get' in sys.argv and 'DIAG_SOURCE_ROWS' in os.environ:
+    if os.environ.get('DIAG_SOURCE_FAIL'):
+        sys.exit(1)
+    print(os.environ['DIAG_SOURCE_ROWS'].replace('{dataset}', sys.argv[-1]), end='')
+    sys.exit(0)
 if name == 'ssh' and os.environ.get('FAIL_CREATE') and ('create' in sys.argv or 'lxc' in sys.argv):
     print('Error: This "Instance_snapshot" entry already exists', file=sys.stderr)
     sys.exit(1)
@@ -55,6 +62,11 @@ if name == 'ssh' and 'get' in sys.argv:
         guid = 'invalid' if mode == 'invalid-guid' else '12345'
         print(f'{dataset}@snapshot-{created}\\tguid\\t{guid}\\t-')
 if name == 'zfs':
+    if 'snapshot' in sys.argv and 'DIAG_TARGET_ROWS' in os.environ:
+        if os.environ.get('DIAG_TARGET_FAIL'):
+            sys.exit(1)
+        print(os.environ['DIAG_TARGET_ROWS'].replace('{dataset}', sys.argv[-1]), end='')
+        sys.exit(0)
     if 'snapshot' in sys.argv and os.environ.get('FAIL_SNAPSHOT_LIST'):
         sys.exit(1)
     if 'snapshot' in sys.argv:
@@ -345,6 +357,67 @@ if name == 'zfs':
     def test_snapshot_failure_stops_transfer(self):
         self.assertNotEqual(self.run_script(FAIL_COMMAND='ssh').returncode, 0)
         self.assertFalse(any(c[0] == 'syncoid' for c in self.calls()))
+
+    def test_replication_failure_reports_no_common_snapshot_guids(self):
+        for kind in ('incus-ct', 'lxd-ct', 'incus-kvm', 'lxd-kvm'):
+            with self.subTest(kind=kind):
+                self.log.unlink(missing_ok=True)
+                self.config.write_text(f'host:vm:{kind}\n')
+                # Same name, different GUIDs: compare the full 64-bit strings.
+                result = self.run_script(FAIL_COMMAND='syncoid', FAIL_STATUS='7',
+                    DIAG_SOURCE_ROWS='{dataset}@same\tguid\t18446744073709551614\t-\n',
+                    DIAG_TARGET_ROWS='{dataset}@same\tguid\t18446744073709551615\t-\n')
+                self.assertEqual(result.returncode, 7, result.stderr)
+                self.assertIn('common snapshots: none (no matching snapshot GUIDs)', result.stderr)
+                self.assertIn('source bookmarks were not checked', result.stderr)
+                self.assertIn('- backup dataset: tank/zrep/vm', result.stderr)
+                transfers = [call for call in self.calls() if call[0] == 'syncoid']
+                self.assertEqual(len(transfers), 1)  # VM stops before its second dataset.
+                self.assertFalse(any('destroy' in call or 'rename' in call for call in self.calls()))
+
+    def test_replication_failure_recognizes_shared_guid_with_different_names(self):
+        result = self.run_script(FAIL_COMMAND='syncoid', FAIL_STATUS='9',
+            DIAG_SOURCE_ROWS='{dataset}@source-name\tguid\t18446744073709551615\t-\n',
+            DIAG_TARGET_ROWS='{dataset}@backup-name\tguid\t18446744073709551615\t-\n')
+        self.assertEqual(result.returncode, 9, result.stderr)
+        self.assertIn('common snapshots: found matching GUIDs', result.stderr)
+        self.assertNotIn('common snapshots: none', result.stderr)
+
+    def test_replication_diagnostic_query_failures_are_not_missing_history(self):
+        for side in ('SOURCE', 'TARGET'):
+            with self.subTest(side=side):
+                result = self.run_script(FAIL_COMMAND='syncoid', FAIL_STATUS='8',
+                    DIAG_SOURCE_ROWS='', DIAG_TARGET_ROWS='', **{f'DIAG_{side}_FAIL': '1'})
+                self.assertEqual(result.returncode, 8, result.stderr)
+                self.assertIn('common snapshot check: unavailable', result.stderr)
+                self.assertNotIn('common snapshots: none', result.stderr)
+
+    def test_replication_diagnostic_rejects_invalid_metadata(self):
+        for rows in ('malformed\n', '{dataset}@snap\tguid\tbad\t-\n',
+                     'other/dataset@snap\tguid\t123\t-\n',
+                     '{dataset}@snap\tcreation\t123\t-\n'):
+            for side in ('SOURCE', 'TARGET'):
+                with self.subTest(rows=rows, side=side):
+                    env = {'DIAG_SOURCE_ROWS': '', 'DIAG_TARGET_ROWS': '', f'DIAG_{side}_ROWS': rows}
+                    result = self.run_script(FAIL_COMMAND='syncoid', FAIL_STATUS='6', **env)
+                    self.assertEqual(result.returncode, 6, result.stderr)
+                    self.assertIn('unavailable (invalid snapshot metadata)', result.stderr)
+                    self.assertNotIn('common snapshots: none', result.stderr)
+
+    def test_replication_diagnostic_accepts_successful_empty_inventories(self):
+        result = self.run_script(FAIL_COMMAND='syncoid', DIAG_SOURCE_ROWS='', DIAG_TARGET_ROWS='')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('common snapshots: none', result.stderr)
+
+    def test_replication_diagnostic_uses_failed_vm_disk_and_extended_destination(self):
+        result = self.run_script(args=['-c', str(self.config), '-s', 'vm', '-E'], FAIL_BLOCK='1',
+            DIAG_SOURCE_ROWS='{dataset}@old\tguid\t123\t-\n',
+            DIAG_TARGET_ROWS='{dataset}@old\tguid\t456\t-\n')
+        self.assertEqual(result.returncode, 7, result.stderr)
+        self.assertIn('- source dataset: host:tank/incus/virtual-machines/vm.block', result.stderr)
+        self.assertIn('- backup dataset: tank/zrep/host/vm/vm.block', result.stderr)
+        self.assertIn('common snapshots: none', result.stderr)
+        self.assertEqual(len([call for call in self.calls() if call[0] == 'syncoid']), 2)
 
     def test_existing_hourly_snapshot_allows_replication(self):
         for kind in ('incus-ct', 'lxd-ct', 'incus-kvm', 'lxd-kvm'):

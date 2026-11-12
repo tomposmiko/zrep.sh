@@ -85,6 +85,70 @@ f_existing_source_snapshot() {
     return 1
 }
 
+# Compare identity, not names: migration can recreate identically named snapshots.
+f_snapshot_guids() {
+    local source_dataset=$1 rows=$2 name property value origin extra
+    local -A snapshots=() guids=()
+    while IFS=$'\t' read -r name property value origin extra; do
+        [[ -n "$name" ]] || continue
+        [[ "$name" == "$source_dataset@"?* && "$property" =~ ^(guid|creation)$ &&
+           "$value" =~ ^[0-9]+$ && "$origin" == - && -z "$extra" ]] || return 1
+        snapshots[$name]=1
+        if [[ "$property" == guid ]]; then
+            guids[$name]=1
+            printf '%s\n' "$value"
+        fi
+    done <<< "$rows"
+    for name in "${!snapshots[@]}"; do
+        [[ -n ${guids[$name]:-} ]] || return 1
+    done
+    return 0
+}
+
+f_diagnose_replication_failure() {
+    local source_dataset=$1 target_dataset=$2 source_rows target_rows source_guids target_guids guid
+    local -A source_ids=()
+    printf 'Replication failed: %s/%s\n- source dataset: %s:%s\n- backup dataset: %s\n' \
+        "$SOURCE_HOST" "$VM_NAME" "$SOURCE_HOST" "$source_dataset" "$target_dataset" >&2
+    if ! source_rows=$(ssh -o BatchMode=yes "syncoid-backup@$SOURCE_HOST" \
+        sudo zfs get -Hpd 1 -t snapshot guid,creation "$source_dataset" </dev/null); then
+        printf '%s\n' '- common snapshot check: unavailable (source snapshot query failed)' >&2
+        return
+    fi
+    if ! target_rows=$(zfs get -Hpd 1 -t snapshot guid,creation "$target_dataset"); then
+        printf '%s\n' '- common snapshot check: unavailable (backup snapshot query failed)' >&2
+        return
+    fi
+    if ! source_guids=$(f_snapshot_guids "$source_dataset" "$source_rows") ||
+       ! target_guids=$(f_snapshot_guids "$target_dataset" "$target_rows"); then
+        printf '%s\n' '- common snapshot check: unavailable (invalid snapshot metadata)' >&2
+        return
+    fi
+    while IFS= read -r guid; do
+        [[ -z "$guid" ]] || source_ids[$guid]=1
+    done <<< "$source_guids"
+    while IFS= read -r guid; do
+        if [[ -n "$guid" && -n ${source_ids[$guid]:-} ]]; then
+            printf '%s\n' '- common snapshots: found matching GUIDs; see the syncoid error above' >&2
+            return
+        fi
+    done <<< "$target_guids"
+    printf '%s\n' '- common snapshots: none (no matching snapshot GUIDs)' \
+        '- incremental base: no shared snapshot; source bookmarks were not checked' >&2
+}
+
+f_replicate() {
+    local source_dataset=$1 target_dataset=$2 status
+    if syncoid -r "${SSH_OPTS[@]}" "${ARGS_SYNCOID[@]}" "syncoid-backup@$SOURCE_HOST:$source_dataset" "$target_dataset"; then
+        return 0
+    else
+        status=$?
+    fi
+    # Diagnostic failures must not replace syncoid's original failure status.
+    f_diagnose_replication_failure "$source_dataset" "$target_dataset" || true
+    return "$status"
+}
+
 DATE=$(date +%Y-%m-%d--%H)
 SNAPSHOT_NAME="zas-$FREQ-$DATE"
 platform=${VIRT_TYPE%-*}
@@ -103,14 +167,14 @@ if ! ssh -o BatchMode=yes "syncoid-backup@$SOURCE_HOST" "${snapshot_command[@]}"
 fi
 case "$VIRT_TYPE" in
     *-ct)
-        syncoid -r "${SSH_OPTS[@]}" "${ARGS_SYNCOID[@]}" "syncoid-backup@$SOURCE_HOST:tank/$platform/containers/$VM_NAME" "$DATASET_ZREP/$VM_NAME"
+        f_replicate "tank/$platform/containers/$VM_NAME" "$DATASET_ZREP/$VM_NAME"
         ;;
     *-kvm)
         if ! zfs list -H -o name "$DATASET_ZREP/$VM_NAME" >/dev/null 2>&1; then
             zfs create "$DATASET_ZREP/$VM_NAME"
         fi
         for suffix in '' .block; do
-            syncoid -r "${SSH_OPTS[@]}" "${ARGS_SYNCOID[@]}" "syncoid-backup@$SOURCE_HOST:tank/$platform/virtual-machines/$VM_NAME$suffix" "$DATASET_ZREP/$VM_NAME/$VM_NAME$suffix"
+            f_replicate "tank/$platform/virtual-machines/$VM_NAME$suffix" "$DATASET_ZREP/$VM_NAME/$VM_NAME$suffix"
         done
         ;;
 esac
