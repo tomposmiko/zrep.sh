@@ -35,6 +35,25 @@ with open(os.environ['CALL_LOG'], 'a') as stream:
     stream.write(json.dumps([name, *sys.argv[1:]]) + '\\n')
 if name == os.environ.get('FAIL_COMMAND'):
     sys.exit(1)
+if name == 'ssh' and os.environ.get('FAIL_CREATE') and ('create' in sys.argv or 'lxc' in sys.argv):
+    print('Error: This "Instance_snapshot" entry already exists', file=sys.stderr)
+    sys.exit(1)
+if name == 'ssh' and 'get' in sys.argv:
+    mode = os.environ.get('REMOTE_SNAPSHOT_MODE', '')
+    if mode == 'query-fails':
+        sys.exit(1)
+    if mode:
+        calls = [json.loads(line) for line in Path(os.environ['CALL_LOG']).read_text().splitlines()]
+        created = next(call[-1] for call in reversed(calls) if call[0] == 'ssh' and ('create' in call or 'lxc' in call))
+        dataset = sys.argv[-1]
+        if mode == 'missing-block' and dataset.endswith('.block'):
+            sys.exit(0)
+        if mode == 'wrong-name':
+            created += '-other'
+        if mode == 'wrong-dataset':
+            dataset += '-other'
+        guid = 'invalid' if mode == 'invalid-guid' else '12345'
+        print(f'{dataset}@snapshot-{created}\\tguid\\t{guid}\\t-')
 if name == 'zfs':
     if 'snapshot' in sys.argv and os.environ.get('FAIL_SNAPSHOT_LIST'):
         sys.exit(1)
@@ -327,6 +346,36 @@ if name == 'zfs':
         self.assertNotEqual(self.run_script(FAIL_COMMAND='ssh').returncode, 0)
         self.assertFalse(any(c[0] == 'syncoid' for c in self.calls()))
 
+    def test_existing_hourly_snapshot_allows_replication(self):
+        for kind in ('incus-ct', 'lxd-ct', 'incus-kvm', 'lxd-kvm'):
+            with self.subTest(kind=kind):
+                self.log.unlink(missing_ok=True)
+                self.config.write_text(f'host:vm:{kind}\n')
+                result = self.run_script(FAIL_CREATE='1', REMOTE_SNAPSHOT_MODE='exists')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('verified existing', result.stderr)
+                calls = self.calls()
+                queries = [call for call in calls if call[0] == 'ssh' and 'get' in call]
+                transfers = [call for call in calls if call[0] == 'syncoid']
+                self.assertEqual(len(queries), 2 if kind.endswith('kvm') else 1)
+                self.assertEqual(len(transfers), len(queries))
+                self.assertLess(max(calls.index(call) for call in queries), min(calls.index(call) for call in transfers))
+                for query in queries:
+                    self.assertEqual(query[4:-1], ['sudo', 'zfs', 'get', '-Hpd', '1', '-t', 'snapshot', 'guid,creation'])
+
+    def test_unverified_existing_snapshot_stops_replication(self):
+        for kind in ('incus-ct', 'incus-kvm'):
+            for mode in ('', 'query-fails', 'wrong-name', 'wrong-dataset', 'invalid-guid', 'missing-block'):
+                if kind.endswith('ct') and mode == 'missing-block':
+                    continue
+                with self.subTest(kind=kind, mode=mode):
+                    self.log.unlink(missing_ok=True)
+                    self.config.write_text(f'host:vm:{kind}\n')
+                    result = self.run_script(FAIL_CREATE='1', REMOTE_SNAPSHOT_MODE=mode)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('existing snapshot could not be verified', result.stdout + result.stderr)
+                    self.assertFalse(any(call[0] == 'syncoid' for call in self.calls()))
+
     def test_exact_matching_and_comments(self):
         self.config.write_text(' # host:vm:incus-ct\nhost:vm:incus-ct\nhost:vm2:incus-ct\n')
         self.assertEqual(self.run_script().returncode, 0)
@@ -349,7 +398,7 @@ if name == 'zfs':
         self.config.write_text('host:vm:incus-ct\nhost:vm2:incus-ct\n')
         result = self.run_script('zrep-all.sh', ['-c', str(self.config)], FAIL_COMMAND='ssh')
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(len([c for c in self.calls() if c[0] == 'ssh']), 2)
+        self.assertEqual(len([c for c in self.calls() if c[0] == 'ssh' and 'create' in c]), 2)
         self.assertFalse(any(c[0] == 'syncoid' for c in self.calls()))
 
     def test_gc_dry_run_literal_filter_and_date(self):

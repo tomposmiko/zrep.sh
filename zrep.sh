@@ -71,12 +71,36 @@ if [[ "$LIST_SNAPSHOTS" == true ]]; then
     exit 0
 fi
 
+f_existing_source_snapshot() {
+    local source_dataset=$1 rows name property value
+    if ! rows=$(ssh -o BatchMode=yes "syncoid-backup@$SOURCE_HOST" \
+        sudo zfs get -Hpd 1 -t snapshot guid,creation "$source_dataset" </dev/null); then
+        return 1
+    fi
+    while IFS=$'\t' read -r name property value _; do
+        if [[ "$name" == "$source_dataset@snapshot-$SNAPSHOT_NAME" && "$property" == guid && "$value" =~ ^[0-9]+$ ]]; then
+            return 0
+        fi
+    done <<< "$rows"
+    return 1
+}
+
 DATE=$(date +%Y-%m-%d--%H)
-case "$VIRT_TYPE" in
-    incus-*) ssh -o BatchMode=yes "syncoid-backup@$SOURCE_HOST" incus snapshot create "$VM_NAME" "zas-$FREQ-$DATE" </dev/null ;;
-    lxd-*) ssh -o BatchMode=yes "syncoid-backup@$SOURCE_HOST" lxc snapshot "$VM_NAME" "zas-$FREQ-$DATE" </dev/null ;;
-esac
+SNAPSHOT_NAME="zas-$FREQ-$DATE"
 platform=${VIRT_TYPE%-*}
+snapshot_command=(incus snapshot create)
+[[ "$platform" != lxd ]] || snapshot_command=(lxc snapshot)
+if ! ssh -o BatchMode=yes "syncoid-backup@$SOURCE_HOST" "${snapshot_command[@]}" "$VM_NAME" "$SNAPSHOT_NAME" </dev/null; then
+    source_datasets=("tank/$platform/containers/$VM_NAME")
+    if [[ "$VIRT_TYPE" == *-kvm ]]; then
+        source_datasets=("tank/$platform/virtual-machines/$VM_NAME" "tank/$platform/virtual-machines/$VM_NAME.block")
+    fi
+    for source_dataset in "${source_datasets[@]}"; do
+        f_existing_source_snapshot "$source_dataset" || \
+            fc_say_fail "Snapshot creation failed and existing snapshot could not be verified: '$source_dataset@snapshot-$SNAPSHOT_NAME'"
+    done
+    printf 'Warning: snapshot creation failed; verified existing %s on all source datasets, continuing replication.\n' "$SNAPSHOT_NAME" >&2
+fi
 case "$VIRT_TYPE" in
     *-ct)
         syncoid -r "${SSH_OPTS[@]}" "${ARGS_SYNCOID[@]}" "syncoid-backup@$SOURCE_HOST:tank/$platform/containers/$VM_NAME" "$DATASET_ZREP/$VM_NAME"

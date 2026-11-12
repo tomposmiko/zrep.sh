@@ -29,10 +29,13 @@ must be unique across the config to prevent different hosts sharing a target.
 default layout. List mode never creates datasets.
 
 Snapshot names remain `zas-<frequency>-YYYY-MM-DD--HH`; Incus/LXD normally
-exposes these in ZFS with a `snapshot-` prefix. Snapshot creation must succeed
-before any transfer. An existing snapshot with the same hourly name will now
-cause an explicit failure instead of silently replicating older evidence;
-review/remove that snapshot through Incus/LXD before retrying in the same hour.
+exposes these in ZFS with a `snapshot-` prefix. If creation fails, replication
+continues only after a read-only ZFS query verifies that exact snapshot already
+exists on the source. VMs require it on both configuration and `.block` datasets
+before either transfer starts. A warning reports reuse of the existing hourly
+snapshot; it is not a newly captured recovery point. Missing snapshots or failed
+verification stop the job. This uses the gateway's existing snapshot metadata
+permission; no new source permissions or snapshot deletion are needed.
 Concurrent runs against the same destination are not supported; serialize
 scheduler invocations (for example with `flock`). The batch command continues
 after job failures and exits nonzero if any job failed. This changes the former
